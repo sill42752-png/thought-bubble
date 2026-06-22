@@ -1,28 +1,32 @@
 /*
  * 마음풍선 / Thought Bubble
- * Generates a short Korean inner thought for the latest character message only.
+ * Adds Korean inner-thought bubbles to character messages.
  */
 
 const TB_MODULE_NAME = 'thought_bubble';
-const TB_SETTINGS_KEY = `${TB_MODULE_NAME}_settings_v2`;
+const TB_SETTINGS_KEY = `${TB_MODULE_NAME}_settings_v3`;
 const TB_ROOT_ID = 'thought_bubble_settings';
 const TB_PANEL_CLASS = 'tb-thought-panel';
 const TB_ACTION_CLASS = 'tb-thought-action';
+const TB_REGEN_CLASS = 'tb-thought-regen';
+const TB_MESSAGE_ATTR = 'data-thought-bubble-message-key';
 
 const TB_DEFAULT_SETTINGS = {
     enabled: true,
     autoGenerate: true,
+    generateAllMessages: true,
     tone: 'subtle',
-    maxLength: 2,
-    replacePrevious: true,
+    maxLength: 5,
     connectionProfile: '',
+    customPrompt: '',
 };
 
 let tbSettings = loadSettings();
 let tbObserver = null;
-let tbIsGenerating = false;
-let tbPendingIndex = null;
-let tbLastAutoKey = '';
+let tbQueue = [];
+let tbQueuedKeys = new Set();
+let tbGenerating = false;
+let tbScanTimer = null;
 
 function log(...args) {
     console.log('[Thought Bubble]', ...args);
@@ -79,7 +83,7 @@ function stripHtml(value) {
     return div.textContent || div.innerText || '';
 }
 
-function compactText(value, limit = 2200) {
+function compactText(value, limit = 2600) {
     return stripHtml(value)
         .replace(/\s+/g, ' ')
         .trim()
@@ -103,17 +107,17 @@ function isCharacterMessage(message) {
     return true;
 }
 
-function getLatestCharacterMessage() {
+function getCharacterMessageEntries() {
     const context = getContextSafe();
     const chat = Array.isArray(context?.chat) ? context.chat : [];
+    return chat
+        .map((message, index) => ({ index, message }))
+        .filter(({ message }) => isCharacterMessage(message));
+}
 
-    for (let i = chat.length - 1; i >= 0; i--) {
-        if (isCharacterMessage(chat[i])) {
-            return { index: i, message: chat[i] };
-        }
-    }
-
-    return null;
+function getLatestCharacterMessage() {
+    const entries = getCharacterMessageEntries();
+    return entries.length ? entries[entries.length - 1] : null;
 }
 
 function getMessageElementByIndex(index) {
@@ -134,19 +138,22 @@ function getMessageElementByIndex(index) {
     return messages.find((el) => Number(el.getAttribute('mesid')) === Number(index)) || null;
 }
 
-function removePanelsExcept(messageElement) {
-    document.querySelectorAll(`.${TB_PANEL_CLASS}`).forEach((node) => {
-        if (!messageElement || !messageElement.contains(node)) {
-            node.remove();
-        }
-    });
-}
-
 function getExistingPanel(messageElement) {
     return messageElement?.querySelector(`.${TB_PANEL_CLASS}`) || null;
 }
 
-function renderPanel(messageElement, state, text = '') {
+function getMessageKey(index) {
+    const context = getContextSafe();
+    const message = context?.chat?.[index];
+    return `${index}:${simpleHash(message?.mes || '')}`;
+}
+
+function isPanelCurrent(messageElement, index) {
+    const panel = getExistingPanel(messageElement);
+    return Boolean(panel && panel.getAttribute(TB_MESSAGE_ATTR) === getMessageKey(index) && ['done', 'loading'].includes(panel.dataset.state));
+}
+
+function renderPanel(messageElement, index, state, text = '') {
     if (!messageElement) return null;
 
     let panel = getExistingPanel(messageElement);
@@ -165,12 +172,14 @@ function renderPanel(messageElement, state, text = '') {
     }
 
     panel.dataset.state = state;
+    panel.setAttribute(TB_MESSAGE_ATTR, getMessageKey(index));
 
     if (state === 'loading') {
         panel.innerHTML = [
             '<div class="tb-thought-title">속마음</div>',
             '<div class="tb-thought-body tb-loading">속마음을 불러오는 중…</div>',
         ].join('');
+        attachHeaderAction(messageElement, index);
         return panel;
     }
 
@@ -180,6 +189,8 @@ function renderPanel(messageElement, state, text = '') {
             `<div class="tb-thought-body tb-error">${escapeHtml(text || '생성에 실패했습니다.')}</div>`,
             '<button type="button" class="tb-thought-action">다시 생성</button>',
         ].join('');
+        attachHeaderAction(messageElement, index);
+        attachPanelAction(panel, index);
         return panel;
     }
 
@@ -188,20 +199,103 @@ function renderPanel(messageElement, state, text = '') {
         `<div class="tb-thought-body">${escapeHtml(text)}</div>`,
         '<button type="button" class="tb-thought-action">다시 생성</button>',
     ].join('');
+    attachHeaderAction(messageElement, index);
+    attachPanelAction(panel, index);
     return panel;
 }
 
-function attachPanelAction(panel, latestIndex) {
-    panel?.querySelector(`.${TB_ACTION_CLASS}`)?.addEventListener('click', () => {
-        generateForIndex(latestIndex, { force: true });
+function getMessageNameElement(messageElement) {
+    if (!messageElement) return null;
+
+    const selectors = [
+        '.name_text',
+        '.mes_name',
+        '.ch_name .name',
+        '.ch_name',
+        '.mes_timer',
+    ];
+
+    for (const selector of selectors) {
+        const found = messageElement.querySelector(selector);
+        if (found) return found;
+    }
+
+    return null;
+}
+
+function attachHeaderAction(messageElement, messageIndex) {
+    if (!messageElement) return;
+
+    let button = messageElement.querySelector(`.${TB_REGEN_CLASS}`);
+    const nameElement = getMessageNameElement(messageElement);
+
+    if (!button) {
+        button = document.createElement('button');
+        button.type = 'button';
+        button.className = TB_REGEN_CLASS;
+        button.dataset.thoughtBubbleIgnore = 'true';
+        button.title = '속마음 다시 생성';
+        button.setAttribute('aria-label', '속마음 다시 생성');
+        button.textContent = '💭';
+    }
+
+    button.dataset.messageIndex = String(messageIndex);
+
+    if (nameElement && button.parentElement !== nameElement.parentElement) {
+        nameElement.insertAdjacentElement('afterend', button);
+    } else if (!nameElement && button.parentElement !== messageElement) {
+        messageElement.insertAdjacentElement('afterbegin', button);
+    }
+
+    if (button.dataset.bound !== 'true') {
+        button.dataset.bound = 'true';
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const index = Number(button.dataset.messageIndex);
+            if (Number.isFinite(index)) enqueueGeneration(index, { force: true, front: true });
+        });
+    }
+}
+
+function attachPanelAction(panel, messageIndex) {
+    const messageElement = panel?.closest?.('.mes');
+    attachHeaderAction(messageElement, messageIndex);
+
+    const button = panel?.querySelector?.(`.${TB_ACTION_CLASS}`);
+    if (!button || button.dataset.bound === 'true') return;
+
+    button.dataset.bound = 'true';
+    button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        enqueueGeneration(messageIndex, { force: true, front: true });
     });
 }
 
-function buildPrompt(latestIndex) {
+function getToneInstruction() {
+    const toneMap = {
+        subtle: '절제되고 자연스럽게. 감정을 과장하지 말 것',
+        romantic: '로맨틱하지만 과장된 멜로드라마처럼 쓰지 말 것',
+        tense: '긴장감 있고 갈등이 느껴지되 차분하게',
+        playful: '장난스럽고 가볍게, 하지만 캐릭터성을 해치지 않게',
+        hype: '개호들갑스럽게. 감정 리액션이 크고 웃기게, 하지만 장면을 깨는 메타 농담은 하지 말 것',
+        chatty: '수다쟁이처럼. 생각이 꼬리에 꼬리를 물고 이어지게, 하지만 캐릭터의 내면 독백으로만 쓸 것',
+    };
+    return toneMap[tbSettings.tone] || toneMap.subtle;
+}
+
+function getLineLimit() {
+    const value = Number(tbSettings.maxLength);
+    if (!Number.isFinite(value)) return 5;
+    return Math.min(10, Math.max(1, Math.round(value)));
+}
+
+function buildPrompt(messageIndex) {
     const context = getContextSafe();
     const chat = Array.isArray(context?.chat) ? context.chat : [];
-    const latest = chat[latestIndex];
-    const previous = chat.slice(Math.max(0, latestIndex - 8), latestIndex)
+    const current = chat[messageIndex];
+    const previous = chat.slice(Math.max(0, messageIndex - 8), messageIndex)
         .map((message) => {
             const speaker = message.is_user ? 'User' : 'Character';
             return `${speaker}: ${compactText(message.mes, 700)}`;
@@ -209,39 +303,31 @@ function buildPrompt(latestIndex) {
         .filter(Boolean)
         .join('\n');
 
-    const latestText = compactText(latest?.mes, 1400);
-    const characterName = latest?.name || context?.name2 || 'Character';
-
-    const toneMap = {
-        subtle: '절제되고 자연스럽게. 감정을 과장하지 말 것',
-        romantic: '로맨틱하지만 과장된 멜로드라마처럼 쓰지 말 것',
-        tense: '긴장감 있고 갈등이 느껴지되 차분하게',
-        playful: '장난스럽고 가볍게, 하지만 캐릭터성을 해치지 않게',
-    };
-
-    const toneInstruction = toneMap[tbSettings.tone] || toneMap.subtle;
-    const lineLimit = Number(tbSettings.maxLength) || 2;
+    const currentText = compactText(current?.mes, 1600);
+    const characterName = current?.name || context?.name2 || 'Character';
+    const lineLimit = getLineLimit();
 
     const systemPrompt = [
-        '너는 롤플레이 캐릭터의 숨은 속마음만 짧게 작성한다.',
+        '너는 롤플레이 캐릭터의 숨은 속마음만 작성한다.',
         '반드시 한국어로만 작성한다.',
-        '장면을 이어 쓰지 말고, 캐릭터의 마음속 독백만 출력한다.',
+        '장면을 이어 쓰지 말고 캐릭터의 마음속 독백만 출력한다.',
         '사용자의 행동이나 대사를 대신 쓰지 않는다.',
-        '해설, 따옴표, 제목, "속마음:" 같은 라벨을 붙이지 않는다.',
+        '해설, 따옴표, 제목, 번호, 불릿, "속마음:" 같은 라벨을 붙이지 않는다.',
         'AI, 어시스턴트, 프롬프트, 지시문을 언급하지 않는다.',
         '출력은 속마음 본문만 한다.',
-    ].join(' ');
+        String(tbSettings.customPrompt || '').trim() ? `추가 사용자 지시: ${String(tbSettings.customPrompt).trim()}` : '',
+    ].filter(Boolean).join(' ');
 
     const prompt = [
         `캐릭터 이름: ${characterName}`,
-        `톤: ${toneInstruction}.`,
+        `톤: ${getToneInstruction()}.`,
         `길이: 최대 ${lineLimit}문장.`,
         '',
         '최근 대화 맥락:',
         previous || '(이전 대화 없음)',
         '',
-        '가장 최근 캐릭터 답변:',
-        latestText,
+        '속마음을 만들 캐릭터 답변:',
+        currentText,
         '',
         '이 순간 캐릭터가 겉으로 말하지 않은 속마음을 한국어로만 작성해.',
     ].join('\n');
@@ -282,7 +368,7 @@ async function callGenerator(systemPrompt, prompt) {
                 systemPrompt,
                 instruct: systemPrompt,
                 quiet: true,
-                maxResponseLength: 350,
+                maxResponseLength: 900,
                 ...profilePayload,
             },
             {
@@ -290,6 +376,7 @@ async function callGenerator(systemPrompt, prompt) {
                 prompt,
                 systemPrompt,
                 quiet: true,
+                maxResponseLength: 900,
                 ...profilePayload,
             },
         ];
@@ -327,99 +414,116 @@ async function callGenerator(systemPrompt, prompt) {
     throw new Error('현재 SillyTavern 환경에서 사용할 수 있는 생성 함수를 찾지 못했습니다.');
 }
 
-async function generateThought(latestIndex) {
-    const { systemPrompt, prompt } = buildPrompt(latestIndex);
+async function generateThought(messageIndex) {
+    const { systemPrompt, prompt } = buildPrompt(messageIndex);
     const result = await callGenerator(systemPrompt, prompt);
 
-    return compactText(result, 500)
+    return compactText(result, 1200)
         .replace(/^['"“”‘’]+|['"“”‘’]+$/g, '')
         .replace(/^속마음\s*[:：]\s*/i, '')
         .trim();
 }
 
-function getMessageKey(index) {
-    const context = getContextSafe();
-    const message = context?.chat?.[index];
-    return `${index}:${simpleHash(message?.mes || '')}`;
-}
+function enqueueGeneration(messageIndex, options = {}) {
+    if (!tbSettings.enabled || messageIndex === null || messageIndex === undefined) return;
 
-async function generateForIndex(latestIndex, options = {}) {
-    if (!tbSettings.enabled) return;
-
-    const messageElement = getMessageElementByIndex(latestIndex);
+    const messageElement = getMessageElementByIndex(messageIndex);
     if (!messageElement) return;
 
-    const key = getMessageKey(latestIndex);
-
-    if (!options.force && tbLastAutoKey === key && getExistingPanel(messageElement)) {
+    if (!options.force && isPanelCurrent(messageElement, messageIndex)) {
+        attachPanelAction(getExistingPanel(messageElement), messageIndex);
         return;
     }
 
-    if (tbIsGenerating) {
-        tbPendingIndex = latestIndex;
-        return;
+    const queueKey = `${messageIndex}:${options.force ? 'force' : getMessageKey(messageIndex)}`;
+    if (tbQueuedKeys.has(queueKey)) return;
+
+    const job = { index: messageIndex, force: Boolean(options.force), queueKey };
+    if (options.front) {
+        tbQueue.unshift(job);
+    } else {
+        tbQueue.push(job);
     }
+    tbQueuedKeys.add(queueKey);
+    processQueue();
+}
 
-    if (tbSettings.replacePrevious) {
-        const panel = getExistingPanel(messageElement);
-        if (panel) panel.remove();
-    }
+async function processQueue() {
+    if (tbGenerating) return;
+    tbGenerating = true;
 
-    tbIsGenerating = true;
-    tbLastAutoKey = key;
-    const loadingPanel = renderPanel(messageElement, 'loading');
-    attachPanelAction(loadingPanel, latestIndex);
+    while (tbQueue.length) {
+        const job = tbQueue.shift();
+        tbQueuedKeys.delete(job.queueKey);
 
-    try {
-        const thought = await generateThought(latestIndex);
-        if (!thought) throw new Error('빈 응답이 돌아왔습니다.');
-        const donePanel = renderPanel(messageElement, 'done', thought);
-        attachPanelAction(donePanel, latestIndex);
-    } catch (err) {
-        error('Thought generation failed:', err);
-        const errorPanel = renderPanel(messageElement, 'error', err?.message || '생성에 실패했습니다. 콘솔 로그를 확인해 주세요.');
-        attachPanelAction(errorPanel, latestIndex);
-    } finally {
-        tbIsGenerating = false;
-        if (tbPendingIndex !== null && tbPendingIndex !== latestIndex) {
-            const pending = tbPendingIndex;
-            tbPendingIndex = null;
-            window.setTimeout(() => generateForIndex(pending), 50);
-        } else {
-            tbPendingIndex = null;
+        const messageElement = getMessageElementByIndex(job.index);
+        if (!messageElement || !tbSettings.enabled) continue;
+
+        if (!job.force && isPanelCurrent(messageElement, job.index)) {
+            attachPanelAction(getExistingPanel(messageElement), job.index);
+            continue;
         }
+
+        renderPanel(messageElement, job.index, 'loading');
+
+        try {
+            const thought = await generateThought(job.index);
+            if (!thought) throw new Error('빈 응답이 돌아왔습니다.');
+            renderPanel(messageElement, job.index, 'done', thought);
+        } catch (err) {
+            error('Thought generation failed:', err);
+            renderPanel(messageElement, job.index, 'error', err?.message || '생성에 실패했습니다. 콘솔 로그를 확인해 주세요.');
+        }
+    }
+
+    tbGenerating = false;
+}
+
+function removeAllPanels() {
+    document.querySelectorAll(`.${TB_PANEL_CLASS}`).forEach((node) => node.remove());
+    document.querySelectorAll(`.${TB_REGEN_CLASS}`).forEach((node) => node.remove());
+}
+
+function scheduleScan(delay = 120) {
+    window.clearTimeout(tbScanTimer);
+    tbScanTimer = window.setTimeout(scanMessages, delay);
+}
+
+function scanMessages() {
+    try {
+        if (!tbSettings.enabled) {
+            removeAllPanels();
+            return;
+        }
+
+        const entries = tbSettings.generateAllMessages
+            ? getCharacterMessageEntries()
+            : [getLatestCharacterMessage()].filter(Boolean);
+
+        for (const { index } of entries) {
+            const messageElement = getMessageElementByIndex(index);
+            if (!messageElement) continue;
+
+            attachHeaderAction(messageElement, index);
+
+            const panel = getExistingPanel(messageElement);
+            if (panel) attachPanelAction(panel, index);
+
+            if (tbSettings.autoGenerate) {
+                enqueueGeneration(index);
+            }
+        }
+    } catch (err) {
+        error('Failed to scan messages:', err);
     }
 }
 
-function ensureLatestThought() {
-    try {
-        if (!tbSettings.enabled) {
-            removePanelsExcept(null);
-            return;
-        }
-
-        const latest = getLatestCharacterMessage();
-        if (!latest) {
-            removePanelsExcept(null);
-            return;
-        }
-
-        const messageElement = getMessageElementByIndex(latest.index);
-        if (!messageElement) return;
-
-        removePanelsExcept(messageElement);
-
-        const existingPanel = getExistingPanel(messageElement);
-        if (existingPanel) {
-            attachPanelAction(existingPanel, latest.index);
-        }
-
-        if (tbSettings.autoGenerate) {
-            window.setTimeout(() => generateForIndex(latest.index), 80);
-        }
-    } catch (err) {
-        error('Failed to attach latest thought:', err);
+function createSentenceOptions() {
+    let html = '';
+    for (let i = 1; i <= 10; i++) {
+        html += `<option value="${i}" ${Number(tbSettings.maxLength) === i ? 'selected' : ''}>${i}문장</option>`;
     }
+    return html;
 }
 
 function createSettingsHtml() {
@@ -438,16 +542,19 @@ function createSettingsHtml() {
 
                     <label class="checkbox_label">
                         <input id="tb_auto_generate" type="checkbox" ${tbSettings.autoGenerate ? 'checked' : ''}>
-                        <span>최근 캐릭터 답변에 자동 생성</span>
+                        <span>속마음 자동 생성</span>
                     </label>
 
                     <label class="checkbox_label">
-                        <input id="tb_replace_previous" type="checkbox" ${tbSettings.replacePrevious ? 'checked' : ''}>
-                        <span>다시 생성할 때 이전 속마음 교체</span>
+                        <input id="tb_generate_all" type="checkbox" ${tbSettings.generateAllMessages ? 'checked' : ''}>
+                        <span>모든 캐릭터 답변에 붙이기</span>
                     </label>
 
                     <label for="tb_connection_profile">연결 프로필 이름</label>
                     <input id="tb_connection_profile" type="text" class="text_pole" placeholder="비우면 현재 연결 사용" value="${escapeHtml(tbSettings.connectionProfile || '')}">
+
+                    <label for="tb_custom_prompt">속마음 보정 프롬프트</label>
+                    <textarea id="tb_custom_prompt" class="text_pole tb-prompt-box" rows="5" placeholder="예: 캐릭터 말투를 더 건조하게, 질투심은 은근하게, 현대어 메타 표현은 피하기">${escapeHtml(tbSettings.customPrompt || '')}</textarea>
 
                     <label for="tb_tone">속마음 톤</label>
                     <select id="tb_tone">
@@ -455,17 +562,17 @@ function createSettingsHtml() {
                         <option value="romantic" ${tbSettings.tone === 'romantic' ? 'selected' : ''}>로맨틱</option>
                         <option value="tense" ${tbSettings.tone === 'tense' ? 'selected' : ''}>긴장감</option>
                         <option value="playful" ${tbSettings.tone === 'playful' ? 'selected' : ''}>장난스러움</option>
+                        <option value="hype" ${tbSettings.tone === 'hype' ? 'selected' : ''}>개호들갑</option>
+                        <option value="chatty" ${tbSettings.tone === 'chatty' ? 'selected' : ''}>수다쟁이</option>
                     </select>
 
                     <label for="tb_max_length">최대 문장 수</label>
                     <select id="tb_max_length">
-                        <option value="1" ${Number(tbSettings.maxLength) === 1 ? 'selected' : ''}>1문장</option>
-                        <option value="2" ${Number(tbSettings.maxLength) === 2 ? 'selected' : ''}>2문장</option>
-                        <option value="3" ${Number(tbSettings.maxLength) === 3 ? 'selected' : ''}>3문장</option>
+                        ${createSentenceOptions()}
                     </select>
 
                     <div class="tb-note">
-                        가장 최근 캐릭터 답변 1개에만 속마음을 자동으로 붙입니다. 속마음은 항상 한국어로 생성됩니다.
+                        캐릭터 답변마다 한국어 속마음을 생성합니다. 이전 채팅도 화면에 로드되어 있으면 자동으로 붙습니다.
                     </div>
                 </div>
             </div>
@@ -480,7 +587,8 @@ function bindSettingsEvents() {
         root.querySelector(`#${id}`)?.addEventListener('change', (event) => {
             tbSettings[key] = Boolean(event.target.checked);
             saveSettings();
-            ensureLatestThought();
+            if (!tbSettings.enabled) removeAllPanels();
+            scheduleScan(50);
         });
     };
 
@@ -488,14 +596,15 @@ function bindSettingsEvents() {
         root.querySelector(`#${id}`)?.addEventListener('change', (event) => {
             tbSettings[key] = event.target.value;
             saveSettings();
-            ensureLatestThought();
+            scheduleScan(50);
         });
     };
 
     bindCheckbox('tb_enabled', 'enabled');
     bindCheckbox('tb_auto_generate', 'autoGenerate');
-    bindCheckbox('tb_replace_previous', 'replacePrevious');
+    bindCheckbox('tb_generate_all', 'generateAllMessages');
     bindValue('tb_connection_profile', 'connectionProfile');
+    bindValue('tb_custom_prompt', 'customPrompt');
     bindValue('tb_tone', 'tone');
     bindValue('tb_max_length', 'maxLength');
 }
@@ -525,7 +634,7 @@ function setupObserver() {
         if (!chat) return;
 
         tbObserver = new MutationObserver(() => {
-            window.requestAnimationFrame(ensureLatestThought);
+            window.requestAnimationFrame(() => scheduleScan(80));
         });
 
         tbObserver.observe(chat, { childList: true, subtree: true });
@@ -541,7 +650,7 @@ function bindSillyTavernEvents() {
         const eventTypes = context?.event_types;
         if (!eventSource || !eventTypes) return;
 
-        const rerender = () => window.setTimeout(ensureLatestThought, 120);
+        const rerender = () => scheduleScan(120);
 
         [
             'CHARACTER_MESSAGE_RENDERED',
@@ -563,7 +672,7 @@ function initThoughtBubble() {
         mountSettings();
         setupObserver();
         bindSillyTavernEvents();
-        ensureLatestThought();
+        scheduleScan(300);
         log('Loaded.');
     } catch (err) {
         error('Initialization failed:', err);

@@ -78,11 +78,71 @@
     opacity: 0.85;
 }
 
+.tb-thought-action {
+    margin-top: 8px;
+    padding: 4px 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+    border-radius: 999px;
+    background: var(--SmartThemeBlurTintColor, rgba(128, 128, 128, 0.14));
+    color: var(--SmartThemeBodyColor, inherit);
+    font-size: 0.82em;
+    line-height: 1.2;
+    cursor: pointer;
+    opacity: 0.82;
+    transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.tb-thought-action:hover {
+    opacity: 1;
+    transform: translateY(-1px);
+}
+
+.tb-thought-action:active {
+    transform: translateY(0);
+}
+
+
+.tb-thought-regen {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    margin-left: 6px;
+    padding: 0;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.32));
+    border-radius: 999px;
+    background: var(--SmartThemeBlurTintColor, rgba(128, 128, 128, 0.13));
+    color: var(--SmartThemeBodyColor, inherit);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.78;
+    vertical-align: middle;
+    transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.tb-thought-regen:hover {
+    opacity: 1;
+    transform: translateY(-1px);
+}
+
+.tb-thought-regen:active {
+    transform: translateY(0);
+}
+
 @media screen and (max-width: 600px) {
     .tb-thought-button {
         min-height: 28px;
         padding: 5px 11px;
         font-size: 0.82em;
+    }
+
+    .tb-thought-regen {
+        width: 25px;
+        height: 25px;
+        font-size: 13px;
+        margin-left: 5px;
     }
 
     .tb-thought-panel {
@@ -95,4 +155,12 @@
     .tb-thought-body {
         font-size: 0.92em;
     }
+}
+
+
+.tb-prompt-box {
+    min-height: 92px;
+    resize: vertical;
+    line-height: 1.45;
+    font-family: inherit;
 }
