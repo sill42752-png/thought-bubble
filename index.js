@@ -49,22 +49,14 @@ function getContextSafe() {
     }
 }
 
-function normalizeSettings(settings) {
-    const normalized = { ...TB_DEFAULT_SETTINGS, ...settings, language: 'ko' };
-    const length = Number(normalized.maxLength);
-    normalized.maxLength = Number.isFinite(length) ? Math.min(10, Math.max(1, Math.round(length))) : 5;
-    normalized.connectionProfile = String(normalized.connectionProfile || '');
-    return normalized;
-}
-
 function loadSettings() {
     try {
         const raw = localStorage.getItem(TB_SETTINGS_KEY);
         const parsed = raw ? JSON.parse(raw) : {};
-        return normalizeSettings(parsed);
+        return { ...TB_DEFAULT_SETTINGS, ...parsed, language: 'ko' };
     } catch (err) {
         warn('Settings were corrupted. Falling back to defaults.', err);
-        return normalizeSettings({});
+        return { ...TB_DEFAULT_SETTINGS, language: 'ko' };
     }
 }
 
@@ -526,53 +518,6 @@ function scanMessages() {
     }
 }
 
-function collectConnectionProfileNames() {
-    const names = new Set();
-
-    const addProfiles = (profiles) => {
-        if (!Array.isArray(profiles)) return;
-        for (const profile of profiles) {
-            const name = String(profile?.name || '').trim();
-            if (name) names.add(name);
-        }
-    };
-
-    try {
-        const context = getContextSafe();
-        addProfiles(globalThis.extension_settings?.connectionManager?.profiles);
-        addProfiles(context?.extensionSettings?.connectionManager?.profiles);
-        addProfiles(context?.extension_settings?.connectionManager?.profiles);
-
-        const nativeSelect = document.getElementById('connection_profiles');
-        if (nativeSelect?.options) {
-            for (const option of Array.from(nativeSelect.options)) {
-                const name = String(option.textContent || '').trim();
-                if (name && name !== '<None>') names.add(name);
-            }
-        }
-    } catch (err) {
-        warn('Failed to read connection profile list:', err);
-    }
-
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-}
-
-function createConnectionProfileOptions() {
-    const selected = String(tbSettings.connectionProfile || '').trim();
-    const names = collectConnectionProfileNames();
-    let html = `<option value="" ${selected ? '' : 'selected'}>메인 / 현재 연결</option>`;
-
-    for (const name of names) {
-        html += `<option value="${escapeHtml(name)}" ${selected === name ? 'selected' : ''}>${escapeHtml(name)}</option>`;
-    }
-
-    if (selected && !names.includes(selected)) {
-        html += `<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} (현재 저장됨)</option>`;
-    }
-
-    return html;
-}
-
 function createSentenceOptions() {
     let html = '';
     for (let i = 1; i <= 10; i++) {
@@ -605,10 +550,8 @@ function createSettingsHtml() {
                         <span>모든 캐릭터 답변에 붙이기</span>
                     </label>
 
-                    <label for="tb_connection_profile">연결 프로필</label>
-                    <select id="tb_connection_profile">
-                        ${createConnectionProfileOptions()}
-                    </select>
+                    <label for="tb_connection_profile">연결 프로필 이름</label>
+                    <input id="tb_connection_profile" type="text" class="text_pole" placeholder="비우면 현재 연결 사용" value="${escapeHtml(tbSettings.connectionProfile || '')}">
 
                     <label for="tb_custom_prompt">속마음 보정 프롬프트</label>
                     <textarea id="tb_custom_prompt" class="text_pole tb-prompt-box" rows="5" placeholder="예: 캐릭터 말투를 더 건조하게, 질투심은 은근하게, 현대어 메타 표현은 피하기">${escapeHtml(tbSettings.customPrompt || '')}</textarea>
@@ -660,14 +603,6 @@ function bindSettingsEvents() {
     bindCheckbox('tb_enabled', 'enabled');
     bindCheckbox('tb_auto_generate', 'autoGenerate');
     bindCheckbox('tb_generate_all', 'generateAllMessages');
-    const profileSelect = root.querySelector('#tb_connection_profile');
-    profileSelect?.addEventListener('focus', () => {
-        const current = profileSelect.value;
-        profileSelect.innerHTML = createConnectionProfileOptions();
-        if (Array.from(profileSelect.options).some((option) => option.value === current)) {
-            profileSelect.value = current;
-        }
-    });
     bindValue('tb_connection_profile', 'connectionProfile');
     bindValue('tb_custom_prompt', 'customPrompt');
     bindValue('tb_tone', 'tone');
