@@ -1,0 +1,11 @@
+{
+  "display_name": "마음풍선",
+  "loading_order": 50,
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Anonymous",
+  "version": "0.2.0",
+  "homePage": "",
+  "auto_update": false,
+  "minimum_client_version": "1.12.0"
+}

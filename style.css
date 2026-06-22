@@ -1,0 +1,98 @@
+/* 마음풍선 / Thought Bubble */
+
+#thought_bubble_settings .inline-drawer-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#thought_bubble_settings select {
+    width: 100%;
+    max-width: 260px;
+}
+
+.tb-note {
+    opacity: 0.75;
+    font-size: 0.9em;
+    line-height: 1.45;
+    margin-top: 4px;
+}
+
+.tb-thought-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 26px;
+    margin: 6px 0 2px 0;
+    padding: 4px 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+    border-radius: 999px;
+    background: var(--SmartThemeBlurTintColor, rgba(128, 128, 128, 0.14));
+    color: var(--SmartThemeBodyColor, inherit);
+    font-size: 0.85em;
+    line-height: 1.2;
+    cursor: pointer;
+    opacity: 0.82;
+    transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.tb-thought-button:hover {
+    opacity: 1;
+    transform: translateY(-1px);
+}
+
+.tb-thought-panel {
+    box-sizing: border-box;
+    width: fit-content;
+    max-width: min(92%, 560px);
+    margin: 8px 0 4px 0;
+    padding: 10px 12px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, rgba(128, 128, 128, 0.15)) 78%, transparent);
+    color: var(--SmartThemeBodyColor, inherit);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12);
+    pointer-events: auto;
+}
+
+.tb-thought-title {
+    margin-bottom: 4px;
+    font-size: 0.78em;
+    font-weight: 700;
+    opacity: 0.72;
+}
+
+.tb-thought-body {
+    font-size: 0.95em;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.tb-loading {
+    opacity: 0.75;
+    font-style: italic;
+}
+
+.tb-error {
+    opacity: 0.85;
+}
+
+@media screen and (max-width: 600px) {
+    .tb-thought-button {
+        min-height: 28px;
+        padding: 5px 11px;
+        font-size: 0.82em;
+    }
+
+    .tb-thought-panel {
+        max-width: 96%;
+        margin-top: 7px;
+        padding: 9px 11px;
+        border-radius: 13px;
+    }
+
+    .tb-thought-body {
+        font-size: 0.92em;
+    }
+}
